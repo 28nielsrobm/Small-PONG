@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PONG — Expandable</title>
+  <style>
+    :root{
+      --bg:#0b0b0b;
+      --panel:#0f1720;
+      --accent:#49b6ff;
+      --muted:#9aa6b2;
+      --white:#e6eef6;
+    }
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}
+    body{
+      display:flex;align-items:center;justify-content:center;
+      background:linear-gradient(180deg,var(--bg),#050506);
+      color:var(--white);
+      padding:20px;
+      box-sizing:border-box;
+    }
+    .wrap{
+      width:900px;
+      max-width:100%;
+      background:linear-gradient(180deg,#07111b33,#08121b66);
+      border-radius:12px;
+      padding:14px;
+      box-shadow:0 8px 30px rgba(2,6,23,0.7);
+    }
+    header{
+      display:flex;align-items:center;justify-content:space-between;
+      gap:12px;margin-bottom:10px;
+    }
+    h1{font-size:18px;margin:0;color:var(--accent);}
+    .controls{display:flex;gap:8px;align-items:center;}
+    button{
+      background:var(--panel);border:1px solid #10202a;color:var(--white);
+      padding:8px 10px;border-radius:8px;cursor:pointer;font-weight:600;
+    }
+    .tiny{padding:6px 8px;font-size:13px}
+    .hud{display:flex;gap:12px;align-items:center;font-size:14px;color:var(--muted)}
+    #gameCanvas{
+      display:block;
+      background:linear-gradient(180deg,#071921,#00121b);
+      border-radius:8px;
+      width:100%;
+      height:520px;
+      touch-action:none;
+      image-rendering:optimizeSpeed;
+    }
+    .footer{margin-top:10px;color:var(--muted);font-size:13px;}
+    .scoreboard{display:flex;gap:18px;align-items:center;font-weight:700;color:var(--white)}
+    .score{min-width:36px;text-align:center;font-size:20px;}
+    label{font-size:13px;color:var(--muted)}
+    input[type="range"]{width:120px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>PONG — Expandable</h1>
+      <div class="controls">
+        <div class="hud">
+          <div class="scoreboard">
+            <div>Player 1 (Q / A): <span id="p1Score" class="score">0</span></div>
+            <div>Player 2 (↑ / ↓): <span id="p2Score" class="score">0</span></div>
+          </div>
+        </div>
+        <button id="pauseBtn" class="tiny">Pause</button>
+        <button id="resetBtn" class="tiny">Reset</button>
+        <label>
+          Speed
+          <input id="speedRange" type="range" min="0.6" max="2.0" step="0.05" value="1.0">
+        </label>
+      </div>
+    </header>
+
+    <canvas id="gameCanvas" width="900" height="520"></canvas>
+
+    <div class="footer">
+      Controls: Player 1 = <strong>W</strong> (up) / <strong>S</strong> (down). Player 2 = <strong>↑</strong> / <strong>↓</strong>.
+      — Build notes: change `GAME` constants or add AI by reading `updateAI()` placeholder.
+    </div>
+  </div>
+
+<script>
+/* =========================
+   Config / Constants
+   ========================= */
+const GAME = {
+  width: 900,            // logical width (canvas is scaled to CSS size automatically)
+  height: 520,
+  paddleWidth: 12,
+  paddleHeight: 90,
+  paddleSpeed: 6,       // base paddle speed (pixels per frame)
+  ballRadius: 8,
+  initialBallSpeed: 5,  // base horizontal speed
+  maxScore: 11,         // optional win condition (not enforced here; you can check scores)
+};
+
+/* =========================
+   State objects
+   ========================= */
+const state = {
+  p1: { x: 20, y: (GAME.height - GAME.paddleHeight) / 2, score: 0 },
+  p2: { x: GAME.width - 20 - GAME.paddleWidth, y: (GAME.height - GAME.paddleHeight) / 2, score: 0 },
+  ball: { x: GAME.width / 2, y: GAME.height / 2, vx: GAME.initialBallSpeed, vy: 0 },
+  running: true,
+  lastTime: 0,
+  speedMultiplier: 1.0,
+  keys: { up: false, down: false, q: false, a: false },
+  aiEnabled: false, // flip true to enable simple right-side AI (example)
+};
+
+/* =========================
+   Canvas setup
+   ========================= */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+/* Make canvas resolution match logical GAME size for crisp drawing */
+function resizeCanvasToGame() {
+  // Keep CSS size responsive but maintain logical coordinate system as GAME.width x GAME.height
+  canvas.width = GAME.width;
+  canvas.height = GAME.height;
+}
+resizeCanvasToGame();
+
+/* =========================
+   Utility helpers
+   ========================= */
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+/* Reset ball to center and serve towards last scorer (or random) */
+function resetBall(towardsRight = Math.random() > 0.5) {
+  state.ball.x = GAME.width / 2;
+  state.ball.y = GAME.height / 2;
+  const angle = (Math.random() * 0.6 - 0.3); // -0.3..0.3 radians for variety
+  const dir = towardsRight ? 1 : -1;
+  const speed = GAME.initialBallSpeed * state.speedMultiplier;
+  state.ball.vx = dir * speed;
+  state.ball.vy = Math.tan(angle) * speed;
+}
+
+/* =========================
+   Input handling
+   ========================= */
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'arrowup' || e.key === 'ArrowUp') { state.keys.up = true; e.preventDefault(); }
+  if (k === 'arrowdown' || e.key === 'ArrowDown') { state.keys.down = true; e.preventDefault(); }
+  if (k === 'w') { state.keys.w = true; }
+  if (k === 's') { state.keys.s = true; }
+  if (k === ' ' || k === 'spacebar') { // space to toggle pause
+    toggleRunning();
+    e.preventDefault();
+  }
+});
+window.addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'arrowup' || e.key === 'arrowup') { state.keys.up = false; }
+  if (k === 'arrowdown' || e.key === 'arrowdown') { state.keys.down = false; }
+  if (k === 'w') { state.keys.w = false; }
+  if (k === 's') { state.keys.s = false; }
+});
+
+/* Touch support (basic) — drag paddles by touch */
+let touchId = null;
+canvas.addEventListener('touchstart', (ev) => {
+  const t = ev.changedTouches[0];
+  touchId = t.identifier;
+  handleTouch(t);
+  ev.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchmove', (ev) => {
+  const t = [...ev.changedTouches].find(t=>t.identifier===touchId);
+  if (t) handleTouch(t);
+  ev.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchend', ()=> touchId = null, { passive: true });
+function handleTouch(t) {
+  const rect = canvas.getBoundingClientRect();
+  const x = (t.clientX - rect.left) * (canvas.width / rect.width);
+  const y = (t.clientY - rect.top) * (canvas.height / rect.height);
+  // If touch is on left half, move left paddle, else right paddle
+  if (x < GAME.width / 2) {
+    state.p1.y = clamp(y - GAME.paddleHeight / 2, 0, GAME.height - GAME.paddleHeight);
+  } else {
+    state.p2.y = clamp(y - GAME.paddleHeight / 2, 0, GAME.height - GAME.paddleHeight);
+  }
+}
+
+/* =========================
+   Core update & physics
+   ========================= */
+function update(dt) {
+  // dt unused for now — fixed-step style (keeps things simpler). You can use dt to scale speeds later.
+  const paddleSpeed = GAME.paddleSpeed * state.speedMultiplier;
+
+  // Player 1 controls (W = up, S = down)
+  if (state.keys.w) state.p1.y -= paddleSpeed;
+  if (state.keys.s) state.p1.y += paddleSpeed;
+
+  // Player 2 controls (ArrowUp / ArrowDown)
+  if (!state.aiEnabled) {
+    if (state.keys.up) state.p2.y -= paddleSpeed;
+    if (state.keys.down) state.p2.y += paddleSpeed;
+  } else {
+    updateAI(paddleSpeed);
+  }
+
+  // Keep paddles inside bounds
+  state.p1.y = clamp(state.p1.y, 0, GAME.height - GAME.paddleHeight);
+  state.p2.y = clamp(state.p2.y, 0, GAME.height - GAME.paddleHeight);
+
+  // Move ball
+  state.ball.x += state.ball.vx;
+  state.ball.y += state.ball.vy;
+
+  // Top / bottom collision
+  if (state.ball.y - GAME.ballRadius <= 0) {
+    state.ball.y = GAME.ballRadius;
+    state.ball.vy *= -1;
+  } else if (state.ball.y + GAME.ballRadius >= GAME.height) {
+    state.ball.y = GAME.height - GAME.ballRadius;
+    state.ball.vy *= -1;
+  }
+
+  // Paddle collisions (AABB circle collision)
+  // Left paddle
+  const leftRect = { x: state.p1.x, y: state.p1.y, w: GAME.paddleWidth, h: GAME.paddleHeight };
+  if (circleRectCollision(state.ball, leftRect)) {
+    // push ball to avoid "sticking"
+    state.ball.x = leftRect.x + leftRect.w + GAME.ballRadius;
+    reflectOffPaddle(state.p1, leftRect, true);
+  }
+
+  // Right paddle
+  const rightRect = { x: state.p2.x, y: state.p2.y, w: GAME.paddleWidth, h: GAME.paddleHeight };
+  if (circleRectCollision(state.ball, rightRect)) {
+    state.ball.x = rightRect.x - GAME.ballRadius;
+    reflectOffPaddle(state.p2, rightRect, false);
+  }
+
+  // Score (ball out of left or right)
+  if (state.ball.x + GAME.ballRadius < 0) {
+    // Player 2 scores
+    state.p2.score += 1;
+    document.getElementById('p2Score').textContent = state.p2.score;
+    resetBall(true); // serve to the right
+  } else if (state.ball.x - GAME.ballRadius > GAME.width) {
+    // Player 1 scores
+    state.p1.score += 1;
+    document.getElementById('p1Score').textContent = state.p1.score;
+    resetBall(false); // serve to the left
+  }
+}
+
+/* Simple AI for right paddle (replace or improve) */
+function updateAI(paddleSpeed) {
+  const center = state.p2.y + GAME.paddleHeight / 2;
+  const diff = state.ball.y - center;
+  const deadzone = 6;
+  if (Math.abs(diff) > deadzone) {
+    state.p2.y += Math.sign(diff) * Math.min(paddleSpeed, Math.abs(diff));
+  }
+}
+
+/* Calculate reflection off paddle:
+   - Increase speed slightly to make rallies more interesting
+   - Adjust volley angle based on where the ball hit the paddle
+*/
+function reflectOffPaddle(paddleState, rect, isLeft) {
+  // Compute hit position (-1 top -> +1 bottom)
+  const relativeY = (state.ball.y - (rect.y + rect.h/2)) / (rect.h/2);
+  const maxBounceAngle = Math.PI * 0.35; // ~63 degrees
+  const bounceAngle = relativeY * maxBounceAngle;
+
+  // Increase speed slightly
+  const speed = Math.hypot(state.ball.vx, state.ball.vy) * 1.06;
+
+  const dir = isLeft ? 1 : -1;
+  state.ball.vx = Math.cos(bounceAngle) * speed * dir;
+  state.ball.vy = Math.sin(bounceAngle) * speed;
+
+  // Prevent extremely shallow angles
+  if (Math.abs(state.ball.vx) < 1.2) state.ball.vx = dir * 1.2;
+}
+
+/* Axis-aligned rectangle vs circle collision */
+function circleRectCollision(circle, rect){
+  // Find closest point to circle center within the rect
+  const closestX = clamp(circle.x, rect.x, rect.x + rect.w);
+  const closestY = clamp(circle.y, rect.y, rect.y + rect.h);
+  const dx = circle.x - closestX;
+  const dy = circle.y - closestY;
+  return (dx*dx + dy*dy) <= (GAME.ballRadius * GAME.ballRadius);
+}
+
+/* =========================
+   Rendering
+   ========================= */
+function draw() {
+  // Clear
+  ctx.clearRect(0,0, GAME.width, GAME.height);
+
+  // Center dashed line
+  ctx.save();
+  ctx.strokeStyle = '#0aa3ff66';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([12, 10]);
+  ctx.beginPath();
+  ctx.moveTo(GAME.width/2, 0);
+  ctx.lineTo(GAME.width/2, GAME.height);
+  ctx.stroke();
+  ctx.restore();
+
+  // Paddles
+  ctx.fillStyle = '#74d0ff';
+  roundRect(ctx, state.p1.x, state.p1.y, GAME.paddleWidth, GAME.paddleHeight, 6);
+  roundRect(ctx, state.p2.x, state.p2.y, GAME.paddleWidth, GAME.paddleHeight, 6);
+
+  // Ball (glowy)
+  ctx.save();
+  const grad = ctx.createRadialGradient(state.ball.x, state.ball.y, 0, state.ball.x, state.ball.y, GAME.ballRadius*3);
+  grad.addColorStop(0, '#ffffff');
+  grad.addColorStop(0.35, '#aee9ff');
+  grad.addColorStop(1, 'rgba(10,160,255,0.06)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(state.ball.x, state.ball.y, GAME.ballRadius, 0, Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+
+  // Scores are in DOM, but we can optionally draw small HUD
+}
+
+/* Helper: draw rounded rectangle filled */
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/* =========================
+   Game loop
+   ========================= */
+function loop(ts) {
+  if (!state.running) {
+    state.lastTime = ts;
+    requestAnimationFrame(loop);
+    return;
+  }
+  // dt in ms (could be used if desired)
+  const dt = ts - state.lastTime;
+  state.lastTime = ts;
+
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+/* =========================
+   Controls / UI bindings
+   ========================= */
+const pauseBtn = document.getElementById('pauseBtn');
+const resetBtn = document.getElementById('resetBtn');
+const speedRange = document.getElementById('speedRange');
+
+pauseBtn.addEventListener('click', () => toggleRunning());
+resetBtn.addEventListener('click', () => {
+  state.p1.score = 0; state.p2.score = 0;
+  document.getElementById('p1Score').textContent = 0;
+  document.getElementById('p2Score').textContent = 0;
+  state.p1.y = state.p2.y = (GAME.height - GAME.paddleHeight) / 2;
+  resetBall(Math.random() > 0.5);
+  if (!state.running) toggleRunning(); // unpause
+});
+
+speedRange.addEventListener('input', (e) => {
+  state.speedMultiplier = parseFloat(e.target.value);
+});
+
+/* Pause toggle */
+function toggleRunning(){
+  state.running = !state.running;
+  pauseBtn.textContent = state.running ? 'Pause' : 'Resume';
+}
+
+/* =========================
+   Init
+   ========================= */
+resetBall(true);
+state.lastTime = performance.now();
+requestAnimationFrame(loop);
+
+/* =========================
+   Expansion notes (where to add features)
+   =========================
+   - To add single-player: set state.aiEnabled = true (or add a UI toggle).
+   - To add sounds: call playSound('paddleHit') inside reflectOffPaddle and playSound('score') when scoring.
+   - To add networked multiplayer: extract paddle and ball state and sync over WebSockets.
+   - To add power-ups: spawn items on court, check circle-rect collisions.
+   - To add variable serve: modify resetBall to accept different angles/speeds.
+   - To add smoothing: use dt in update to scale movement by time delta.
+   ========================= */
+</script>
+</body>
+</html>
